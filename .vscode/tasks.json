@@ -16,6 +16,7 @@
                 "$(sdl2-config",
                 "--cflags",
                 "--libs)",
+                "-lm",
                 ""
             ],
             "options": {
