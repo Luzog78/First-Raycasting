@@ -67,7 +67,7 @@ typedef struct
 	SDL_Texture *texture;
 	t_level level;
 	t_player player;
-	Uint64 clock;
+	double clock;
 } t_sdl_master;
 
 void screen_draw_pixel(t_sdl_canvas *canvas, t_vec2 *point, t_color *color)
@@ -369,6 +369,61 @@ void update_screen(t_sdl_master *master)
 	}
 }
 
+int handle_collisions(t_sdl_master *master, int depth, t_vec2 position, t_vec2 back, t_vec2 direction)
+{
+	for (float off_y = -0.2; off_y <= 0.2; off_y += 0.1)
+	{
+		for (float off_x = -0.2; off_x <= 0.2; off_x += 0.1)
+		{
+			t_vec2 pos = {position.x + off_x, position.y + off_y};
+			if (master->level.array[(int) pos.y * master->level.width + (int) pos.x] == 1)
+			{
+				if (depth != 0)
+				{
+					return 1;
+				}
+
+				position.x = back.x + direction.x;
+				position.y = back.y;
+
+				if (handle_collisions(master, depth + 1, position, back, direction) == 0)
+				{
+					master->player.position.x = position.x;
+					master->player.position.y = position.y;
+					return 0;
+				}
+
+				position.x = back.x;
+				position.y = back.y + direction.y;
+
+				if (handle_collisions(master, depth + 1, position, back, direction) == 0)
+				{
+					master->player.position.x = position.x;
+					master->player.position.y = position.y;
+					return 0;
+				}
+
+				return 1;
+			}
+		}
+	}
+	return 0;
+}
+
+void move_player(t_sdl_master *master, float x, float y)
+{
+	t_vec2 back = {master->player.position.x, master->player.position.y};
+	master->player.position.x += x;
+	master->player.position.y += y;
+
+
+	if (handle_collisions(master, 0, master->player.position, back, (t_vec2){x, y}))
+	{
+		master->player.position.x = back.x;
+		master->player.position.y = back.y;
+	}
+}
+
 int main()
 {
 	t_sdl_master master;
@@ -389,6 +444,7 @@ int main()
 			}
 		}
 
+		SDL_PumpEvents();
 		const Uint8 *state = SDL_GetKeyboardState(NULL);
 		if (state[SDL_SCANCODE_ESCAPE])
 		{
@@ -396,13 +452,15 @@ int main()
 		}
 		if (state[SDL_SCANCODE_UP])
 		{
-			master.player.position.x += master.player.speed * cos(master.player.direction);
-			master.player.position.y += master.player.speed * sin(master.player.direction);
+			move_player(&master,
+				master.player.speed * cos(master.player.direction),
+				master.player.speed * sin(master.player.direction));
 		}
 		if (state[SDL_SCANCODE_DOWN])
 		{
-			master.player.position.x -= master.player.speed * cos(master.player.direction);
-			master.player.position.y -= master.player.speed * sin(master.player.direction);
+			move_player(&master,
+				-master.player.speed * cos(master.player.direction),
+				-master.player.speed * sin(master.player.direction));
 		}
 		if (state[SDL_SCANCODE_LEFT])
 		{
@@ -472,8 +530,15 @@ int main()
 		update_minimap(&master);
 		update_screen(&master);
 
-		master.clock++;
-		SDL_Delay(1000 / 60);
+		double t = SDL_GetPerformanceCounter() / 1000000.0;
+		double fps = 1000 / (t - master.clock);
+		if (1)
+		{
+			printf("FPS: %f\n", fps);
+		}
+
+		master.clock = t;
+		SDL_Delay(1000 / 120);
 		update_window(&master);
 	}
 	
