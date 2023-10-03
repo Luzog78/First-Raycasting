@@ -5,7 +5,6 @@
 #include <math.h>
 #include <SDL2/SDL.h>
 
-#include "Untitled.ppm"
 #include "ft_split.c"
 #include "ft_startswith.c"
 
