@@ -1,13 +1,20 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
+#include <fcntl.h>
 #include <math.h>
 #include <SDL2/SDL.h>
+
+#include "Untitled.ppm"
+#include "ft_split.c"
+#include "ft_startswith.c"
 
 #define PI 3.14159265358979323846
 
 #define SCREEN_WIDTH 640
 #define SCREEN_HEIGHT 480
 #define SCREEN_MAX_INDEX (SCREEN_WIDTH * SCREEN_HEIGHT * 4)
+#define MAGIC_NUMBER 158 / 320 * SCREEN_HEIGHT
 #define RAYS_AMOUNT 512
 #define RAYS_DISPLAY 10
 #define RAYS_FOV (PI / 3)
@@ -27,6 +34,22 @@ typedef struct
 	Uint8 a;
 } t_color;
 
+typedef struct s_texture
+{
+	char name;
+	int size;
+	int is_solid;
+	Uint8 *array;
+	struct s_texture *next;
+} t_texture;
+
+typedef struct
+{
+	int amount;
+	t_texture *list;
+	t_texture not_found;
+} t_textures;
+
 typedef struct
 {
 	int width;
@@ -39,7 +62,7 @@ typedef struct
 {
 	int width;
 	int height;
-	int *array;
+	char *array;
 } t_level;
 
 typedef struct
@@ -48,6 +71,7 @@ typedef struct
 	float angle;
 	float distance;
 	int side;
+	char texture;
 } t_ray;
 
 typedef struct
@@ -55,6 +79,7 @@ typedef struct
 	t_vec2 position;
 	float direction;
 	float speed;
+	float rotation_speed;
 	t_ray rays[RAYS_AMOUNT];
 } t_player;
 
@@ -67,8 +92,117 @@ typedef struct
 	SDL_Texture *texture;
 	t_level level;
 	t_player player;
+	t_textures textures;
 	double clock;
+	double fps;
 } t_sdl_master;
+
+void quit(int exit_code, t_sdl_master *master);
+
+t_texture texture_get(t_sdl_master *master, char name)
+{
+	t_texture *texture = master->textures.list;
+	while (texture != NULL)
+	{
+		if (texture->name == name)
+		{
+			return *texture;
+		}
+		texture = texture->next;
+	}
+	return master->textures.not_found;
+}
+
+t_texture *texture_add(t_sdl_master *master, char name, int size, int is_solid, Uint8 *array)
+{
+	t_texture *texture = malloc(sizeof(t_texture));
+	texture->name = name;
+	texture->size = size;
+	texture->is_solid = is_solid;
+	texture->array = array;
+	texture->next = NULL;
+	t_texture *last = master->textures.list;
+	if (last == NULL)
+	{
+		master->textures.list = texture;
+	}
+	else
+	{
+		while (last->next != NULL)
+		{
+			if (last->next == NULL)
+			{
+				last->next = texture;
+				break;
+			}
+			last = last->next;
+		}
+		last->next = texture;
+	}
+	master->textures.amount++;
+	return texture;
+}
+
+void texture_parse(t_sdl_master *master, t_texture *texture, int fd)
+{
+	char buffer;
+	char line[256];
+	int line_len = 0;
+	int current_line = 0;
+	while (read(fd, &buffer, 1) > 0)
+	{
+		if (buffer == '\n' || line_len >= 255)
+		{
+			line[line_len] = '\0';
+
+			if (ft_startswith(line, "# is_solid "))
+			{
+				texture->is_solid = atoi(ft_split(line, " ")[2]) == 1;
+				line_len = 0;
+				continue;
+			}
+			
+			if (line[0] == '\0' || line[0] == '#')
+			{
+				line_len = 0;
+				continue;
+			}
+
+			if (current_line == 0 || current_line == 2)
+			{
+				line_len = 0;
+				current_line++;
+				continue;
+			}
+			else if (current_line == 1)
+			{
+				texture->size = atoi(ft_split(line, " ")[0]);
+				texture->array = malloc(texture->size * texture->size * 3 * sizeof(Uint8));
+				line_len = 0;
+				current_line++;
+				continue;
+			}
+
+			int integer = atoi(line);
+			if (integer < 0 || integer > 255)
+			{
+				printf("Color Error. (texture: '%s', color: '%d')\n", (char[]) {texture->name, '\0'}, integer);
+				quit(1, master);
+				return;
+			}
+			texture->array[current_line - 3] = integer;
+
+			line_len = 0;
+			current_line++;
+		}
+		else //if (buffer != ' ' && buffer != '\t')
+		{
+			line[line_len] = buffer;
+			line_len++;
+		}
+	}
+	close(fd);
+}
 
 void screen_draw_pixel(t_sdl_canvas *canvas, t_vec2 *point, t_color *color)
 {
@@ -166,17 +300,32 @@ int init(t_sdl_master *master)
 	master->screen.array = malloc(master->screen.width * master->screen.height * 4 * sizeof(Uint8));
 	master->level.width = 8;
 	master->level.height = 8;
-	master->level.array = malloc(master->level.width * master->level.height * sizeof(int));
+	master->level.array = malloc(master->level.width * master->level.height * sizeof(char));
 	master->minimap.width = master->level.width * 24;
 	master->minimap.height = master->level.height * 24;
 	master->minimap.scale = 1;
 	master->minimap.array = malloc(master->minimap.width * master->minimap.height * 4 * sizeof(Uint8));
 	master->player.position = (t_vec2){3.5, 5.5};
-	master->player.direction = 0;
-	master->player.speed = 0.1;
+	master->player.direction = -PI / 2;
+	master->player.speed = 0.06;
+	master->player.rotation_speed = 0.05;
+	master->textures.amount = 0;
+	master->textures.list = NULL;
+	master->textures.not_found.size = 4;
+	master->textures.not_found.is_solid = 1;
+	master->textures.not_found.array = malloc(master->textures.not_found.size * master->textures.not_found.size * 3 * sizeof(Uint8));
+	for (int i = 0; i < 4 * 4 * 3; i++)
+		master->textures.not_found.array[i] = (int[]){
+			255,   0, 255,      0,   0,   0,    255,   0, 255,      0,   0,   0,
+			  0,   0,   0,    255,   0, 255,      0,   0,   0,    255,   0, 255,
+			255,   0, 255,      0,   0,   0,    255,   0, 255,      0,   0,   0,
+			  0,   0,   0,    255,   0, 255,      0,   0,   0,     255,   0, 255
+		}[i];
 	master->clock = 0;
+	master->fps = 0;
 
-	if (master->screen.array == NULL || master->minimap.array == NULL || master->level.array == NULL)
+	if (master->screen.array == NULL || master->minimap.array == NULL
+		|| master->level.array == NULL || master->textures.not_found.array == NULL)
 	{
 		printf("malloc Error.\n");
 		return 1;
@@ -187,16 +336,28 @@ int init(t_sdl_master *master)
 	for (int i = 0; i < master->minimap.width * master->minimap.height * 4; i++)
 		master->minimap.array[i] = (i % 4) == 3 ? 255 : 0;
 	for (int i = 0; i < master->level.width * master->level.height; i++)
-		master->level.array[i] = (int[]){
-			1, 1, 1, 1, 1, 1, 1, 1,
-			1, 0, 1, 0, 0, 0, 0, 1,
-			1, 0, 1, 0, 0, 0, 0, 1,
-			1, 0, 1, 0, 1, 1, 0, 1,
-			1, 0, 0, 0, 0, 1, 0, 1,
-			1, 0, 0, 0, 0, 0, 0, 1,
-			1, 0, 0, 0, 0, 0, 0, 1,
-			1, 1, 1, 1, 1, 1, 1, 1
+		master->level.array[i] = (char[]){
+			'1', '1', '1', '1', '1', '1', '1', '1',
+			'1', '0', '1', '0', '0', '0', '0', '1',
+			'1', '0', '1', '0', '0', '0', '0', '1',
+			'1', '0', '1', '0', '1', '1', '0', '1',
+			'1', '0', '0', '0', '0', '1', '0', '1',
+			'1', '0', '0', '0', '0', '0', '0', '1',
+			'1', '0', '0', '0', '0', '0', '0', '1',
+			'1', '1', '1', '1', '1', '1', '1', '1'
 		}[i];
+
+	texture_add(master, '0', 0, 0, NULL);
+
+	for (int i = 0; i < 16; i++)
+	{
+		char path[] = { "x.ppm" };
+		path[0] = "123456789abcdef"[i];
+		int fd = open(path, O_RDONLY);
+		if (fd != -1)
+			texture_parse(master, texture_add(master, path[0], 0, 1, NULL), fd);
+	}
+	
 
 	if (SDL_Init(SDL_INIT_VIDEO) != 0)
 	{
@@ -315,10 +476,23 @@ void update_minimap(t_sdl_master *master)
 		for (int x = 0; x < master->level.width; x++)
 		{
 			int index = y * master->level.width + x;
-			if (master->level.array[index] == 1)
+			t_texture texture = texture_get(master, master->level.array[index]);
+			if (texture.size > 0)
 			{
-				screen_draw_rect(&master->minimap,
-					&(t_vec2){x * 24, y * 24}, &(t_vec2){x * 24 + 24, y * 24 + 24}, &(t_color){255, 0, 0, 196}, 1);
+				/*screen_draw_rect(&master->minimap,
+					&(t_vec2){x * 24, y * 24}, &(t_vec2){x * 24 + 24, y * 24 + 24}, &(t_color){255, 0, 0, 196}, 1);*/
+				for (int i = 0; i < 24; i++)
+				{
+					for (int j = 0; j < 24; j++)
+					{
+						int texture_index = (i * texture.size / 24 * texture.size + j * texture.size / 24) * 3;
+						screen_draw_pixel(&master->minimap,
+							&(t_vec2){x * 24 + j, y * 24 + i},
+							&(t_color){texture.array[texture_index],
+										texture.array[texture_index + 1],
+										texture.array[texture_index + 2], 196});
+					}
+				}
 			}
 		}
 	}
@@ -359,13 +533,40 @@ void update_screen(t_sdl_master *master)
 	{
 		t_ray ray = master->player.rays[i];
 		float distance = ray.distance * cos(ray.angle - master->player.direction);
-		float height = master->screen.height / distance / 1.5;
+		float height = master->screen.height / distance;
 		float position = (master->screen.height - height) / 2.0;
 		float tiling = master->screen.width / (float) RAYS_AMOUNT;
-		screen_draw_rect(&master->screen,
-			&(t_vec2){i * tiling, position},
-			&(t_vec2){i * tiling + tiling, position + height},
-			ray.side == 1 ? &(t_color){255, 255, 255, 255} : &(t_color){225, 225, 225, 255}, 1);
+		t_texture texture = texture_get(master, ray.texture);
+		int texture_size = texture.size;
+		float texture_x;
+		if (ray.side == 0)
+		{
+			texture_x = (int) (ray.position.x * texture_size) % texture_size;
+			if (ray.angle >= PI)
+				texture_x = texture_size - texture_x - 1;
+		}
+		else
+		{
+			texture_x = (int) (ray.position.y * texture_size) % texture_size;
+			if (ray.angle < PI / 2 || ray.angle >= 3 * PI / 2)
+				texture_x = texture_size - texture_x - 1;
+		}
+		float texture_y = 0;
+		float texture_y_inc = texture_size / height;
+		float shade = ray.side == 1 ? 1 : 0.8;
+		for (size_t y = 0; y < height; y++)
+		{
+			int pixel_index = ((int) texture_y * texture_size + (int) texture_x) * 3;
+			t_color color = {texture.array[pixel_index] * shade,
+								texture.array[pixel_index + 1] * shade,
+								texture.array[pixel_index + 2] * shade,
+								255};
+			screen_draw_rect(&master->screen,
+				&(t_vec2){i * tiling, position + y},
+				&(t_vec2){i * tiling + tiling, position + y + texture_y_inc},
+				&color, 1);
+			texture_y += texture_y_inc;
+		}
 	}
 }
 
@@ -376,7 +577,8 @@ int handle_collisions(t_sdl_master *master, int depth, t_vec2 position, t_vec2 b
 		for (float off_x = -0.2; off_x <= 0.2; off_x += 0.1)
 		{
 			t_vec2 pos = {position.x + off_x, position.y + off_y};
-			if (master->level.array[(int) pos.y * master->level.width + (int) pos.x] == 1)
+			t_texture texture = texture_get(master, master->level.array[(int) pos.y * master->level.width + (int) pos.x]);
+			if (texture.is_solid)
 			{
 				if (depth != 0)
 				{
@@ -464,11 +666,11 @@ int main()
 		}
 		if (state[SDL_SCANCODE_LEFT])
 		{
-			master.player.direction -= 0.1;
+			master.player.direction -= master.player.rotation_speed;
 		}
 		if (state[SDL_SCANCODE_RIGHT])
 		{
-			master.player.direction += 0.1;
+			master.player.direction += master.player.rotation_speed;
 		}
 
 		for (int i = 0; i < RAYS_AMOUNT; i++)
@@ -482,6 +684,7 @@ int main()
 			float dx, dy;
 
 			t_vec2 vertical_position;
+			char vertical_texture;
 			float atan = -1 / tan(angle);
 			vertical_position.y = (int) master.player.position.y + (angle >= PI ? 0 : 1);
 			vertical_position.x = master.player.position.x + (master.player.position.y - vertical_position.y) * atan;
@@ -492,7 +695,8 @@ int main()
 				int index = ((int) (vertical_position.y + (angle >= PI ? -1 : 0))) * master.level.width + (int) (vertical_position.x);
 				if (index < 0 || index >= master.level.width * master.level.height)
 					break;
-				if (master.level.array[index] == 1)
+				vertical_texture = master.level.array[index];
+				if (texture_get(&master, vertical_texture).size > 0)
 				{
 					break;
 				}
@@ -502,6 +706,7 @@ int main()
 			float vertical_distance = sqrt(pow(vertical_position.x - master.player.position.x, 2) + pow(vertical_position.y - master.player.position.y, 2));
 
 			t_vec2 horizontal_position;
+			char horizontal_texture;
 			float ntan = -tan(angle);
 			horizontal_position.x = (int) master.player.position.x + (angle >= PI / 2 && angle < 3 * PI / 2 ? 0 : 1);
 			horizontal_position.y = master.player.position.y + (master.player.position.x - horizontal_position.x) * ntan;
@@ -512,7 +717,8 @@ int main()
 				int index = ((int) (horizontal_position.y)) * master.level.width + (int) (horizontal_position.x + (angle >= PI / 2 && angle < 3 * PI / 2 ? -1 : 0));
 				if (index < 0 || index >= master.level.width * master.level.height)
 					break;
-				if (master.level.array[index] == 1)
+				horizontal_texture = master.level.array[index];
+				if (texture_get(&master, horizontal_texture).size > 0)
 				{
 					break;
 				}
@@ -525,20 +731,26 @@ int main()
 			master.player.rays[i].angle = angle;
 			master.player.rays[i].distance = vertical_distance < horizontal_distance ? vertical_distance : horizontal_distance;
 			master.player.rays[i].side = vertical_distance < horizontal_distance ? 0 : 1;
+			master.player.rays[i].texture = vertical_distance < horizontal_distance ? vertical_texture : horizontal_texture;
+
+			if (master.player.rays[i].distance < 0.1)
+			{
+				break;
+			}
 		}
 
 		update_minimap(&master);
 		update_screen(&master);
 
 		double t = SDL_GetPerformanceCounter() / 1000000.0;
-		double fps = 1000 / (t - master.clock);
+		master.fps = 1000 / (t - master.clock);
 		if (1)
 		{
-			printf("FPS: %f\n", fps);
+			printf("FPS: %f\n", master.fps);
 		}
 
 		master.clock = t;
-		SDL_Delay(1000 / 120);
+		SDL_Delay(1);
 		update_window(&master);
 	}
 	
